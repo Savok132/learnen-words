@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Перевод слова</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --text: var(--tg-theme-text-color, #1b1b1b);
+    --hint: var(--tg-theme-hint-color, #8a8a8a);
+    --accent: var(--tg-theme-button-color, #2a7de1);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --card: var(--tg-theme-secondary-bg-color, #f2f3f5);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+         font: 17px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .card { background: var(--card); border-radius: 14px; padding: 18px; }
+  .en { font-size: 26px; font-weight: 700; }
+  .ru { font-size: 19px; margin-top: 6px; }
+  .hint { color: var(--hint); font-size: 14px; }
+  button { width: 100%; border: 0; border-radius: 10px; padding: 13px; margin-top: 10px; font-size: 16px;
+           background: var(--accent); color: var(--accent-text); cursor: pointer; }
+  button.ghost { background: transparent; color: var(--accent); }
+  h1 { font-size: 17px; margin: 0 0 12px; }
+  #text { white-space: pre-wrap; padding-bottom: 210px; }
+  #text span.w { border-bottom: 1px dotted var(--hint); cursor: pointer; }
+  #text span.w.on { background: var(--accent); color: var(--accent-text); border-radius: 4px; }
+  #sheet { position: fixed; left: 0; right: 0; bottom: 0; padding: 16px; background: var(--bg);
+           box-shadow: 0 -4px 18px rgba(0,0,0,.18); border-radius: 16px 16px 0 0; display: none; }
+</style>
+</head>
+<body>
+<div id="app" class="hint">Загрузка…</div>
+<div id="sheet"></div>
+<script>
+const BOT = "learnen_for_family_bot";
+const tg = window.Telegram && Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+const param = (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param)
+  || new URLSearchParams(location.search).get("startapp") || "";
+let DATA = { words: {}, texts: {} };
+const cache = {};
+
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function translate(key) {
+  if (DATA.words[key]) return DATA.words[key];
+  if (cache[key]) return cache[key];
+  try {
+    const r = await fetch("https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ru&dt=t&dt=bd&q="
+                          + encodeURIComponent(key));
+    const d = await r.json();
+    const v = [d[0][0][0].toLowerCase()].concat(d[1] && d[1][0] ? d[1][0][1].slice(0, 3).map(t => t.toLowerCase()) : []);
+    return cache[key] = [key, [...new Set(v)].join(", ")];
+  } catch (e) {
+    return [key, null];
+  }
+}
+
+function addLink(key) {  // «➕ В словарик» → бот в личке добавляет слово (a_слово)
+  const url = `https://t.me/${BOT}?start=a_${key}`;
+  if (tg) { tg.openTelegramLink(url); tg.close(); } else location.href = url;
+}
+
+async function wordCard(key, target, closable) {
+  target.innerHTML = `<div class="card"><div class="en">${esc(key)}</div><div class="ru hint">перевожу…</div></div>`;
+  const [en, ru] = await translate(key);
+  target.innerHTML = `<div class="card"><div class="en">${esc(en)}</div>
+    <div class="ru">${ru ? esc(ru) : '<span class="hint">перевод сейчас недоступен</span>'}</div></div>
+    ${ru && /^[a-z]{1,40}$/.test(key) ? '<button id="add">➕ В словарик</button>' : ""}
+    <button class="ghost" id="close">${closable ? "Скрыть" : "Закрыть"}</button>`;
+  const add = target.querySelector("#add");
+  if (add) add.onclick = () => addLink(key);
+  target.querySelector("#close").onclick = () => closable ? hideSheet() : (tg ? tg.close() : null);
+}
+
+const sheet = document.getElementById("sheet");
+let active = null;
+function hideSheet() { sheet.style.display = "none"; if (active) active.classList.remove("on"); active = null; }
+
+function reader(id, app) {
+  const t = DATA.texts[id];
+  if (!t) { app.textContent = "Текст не найден."; return; }
+  app.className = "";
+  app.innerHTML = `<h1>📖 ${esc(t.title)}</h1><div class="hint">Нажми на любое слово — покажу перевод.</div><div id="text"></div>`;
+  // слова → span, остальной текст как есть
+  app.querySelector("#text").innerHTML = esc(t.text).replace(/[A-Za-z]+/g, w => `<span class="w">${w}</span>`);
+  app.querySelector("#text").onclick = e => {
+    if (!e.target.classList.contains("w")) return;
+    if (active) active.classList.remove("on");
+    active = e.target; active.classList.add("on");
+    sheet.style.display = "block";
+    wordCard(e.target.textContent.toLowerCase(), sheet, true);
+  };
+}
+
+(async () => {
+  const app = document.getElementById("app");
+  try { DATA = await (await fetch("data.json")).json(); } catch (e) {}
+  if (param.startsWith("t_")) reader(param.slice(2), app);
+  else if (param.startsWith("w_")) { app.className = ""; wordCard(param.slice(2), app, false); }
+  else app.textContent = "Открой мини-окно, нажав на английское слово в сообщении бота.";
+})();
+</script>
+</body>
+</html>
